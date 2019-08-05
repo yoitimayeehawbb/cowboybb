@@ -7,6 +7,12 @@
         "([^0-9]|^)1([^,0-9]|$)": "`x` video",
         "": "`x` videos"
     },
+    "`x` playlists": {
+        "(\\D|^)1(\\D|$)": "`x` playlist",
+        "": "`x` playlists"
+    },
+    "View all playlists": "View all playlists",
+    "Updated `x` ago": "Updated `x` ago",
     "LIVE": "LIVE",
     "Shared `x` ago": "Shared `x` ago",
     "Unsubscribe": "Unsubscribe",
@@ -162,7 +168,10 @@
     "Hi! Looks like you have JavaScript turned off. Click here to view comments, keep in mind they may take a bit longer to load.": "Hi! Looks like you have JavaScript turned off. Click here to view comments, keep in mind they may take a bit longer to load.",
     "View YouTube comments": "View YouTube comments",
     "View more comments on Reddit": "View more comments on Reddit",
-    "View `x` comments": "View `x` comments",
+    "View `x` comments": {
+        "(\\D|^)1(\\D|$)": "View `x` comment",
+        "": "View `x` comments"
+    },
     "View Reddit comments": "View Reddit comments",
     "Hide replies": "Hide replies",
     "Show replies": "Show replies",

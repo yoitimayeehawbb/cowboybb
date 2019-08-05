@@ -35,7 +35,7 @@ struct PlaylistVideo
     length_seconds: Int32,
     published:      Time,
     plid:           String,
-    index:          Int32,
+    index:          Int64,
     live_now:       Bool,
   })
 end
@@ -53,57 +53,88 @@ struct Playlist
     updated:          Time,
     thumbnail:        String?,
   })
+
+  def privacy
+    PlaylistPrivacy::Public
+  end
 end
 
-def fetch_playlist_videos(plid, page, video_count, continuation = nil, locale = nil)
-  client = make_client(YT_URL)
+enum PlaylistPrivacy
+  Public   = 0
+  Unlisted = 1
+  Private  = 2
+end
 
-  if continuation
-    html = client.get("/watch?v=#{continuation}&list=#{plid}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
-    html = XML.parse_html(html.body)
-
-    index = html.xpath_node(%q(//span[@id="playlist-current-index"])).try &.content.to_i?
-    if index
-      index -= 1
-    end
-    index ||= 0
-  else
-    index = (page - 1) * 100
-  end
-
-  if video_count > 100
-    url = produce_playlist_url(plid, index)
-
-    response = client.get(url)
-    response = JSON.parse(response.body)
-    if !response["content_html"]? || response["content_html"].as_s.empty?
-      raise translate(locale, "Empty playlist")
-    end
-
-    document = XML.parse_html(response["content_html"].as_s)
-    nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
-    videos = extract_playlist(plid, nodeset, index)
-  else
-    # Playlist has less than one page of videos, so subsequent pages will be empty
-    if page > 1
-      videos = [] of PlaylistVideo
-    else
-      # Extract first page of videos
-      response = client.get("/playlist?list=#{plid}&gl=US&hl=en&disable_polymer=1")
-      document = XML.parse_html(response.body)
-      nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
-
-      videos = extract_playlist(plid, nodeset, 0)
-
-      if continuation
-        until videos[0].id == continuation
-          videos.shift
-        end
-      end
+struct InvidiousPlaylist
+  module PlaylistPrivacyConverter
+    def self.from_rs(rs)
+      return PlaylistPrivacy.parse(String.new(rs.read(Slice(UInt8))))
     end
   end
 
-  return videos
+  db_mapping({
+    title:       String,
+    id:          String,
+    author:      String,
+    description: String,
+    video_count: Int32,
+    created:     Time,
+    updated:     Time,
+    privacy:     {type: PlaylistPrivacy, default: PlaylistPrivacy::Private, converter: PlaylistPrivacyConverter},
+    index:       Array(Int64),
+  })
+
+  # TODO: Playlist stub, add thumbnail
+  def thumbnail_id
+    nil
+  end
+
+  def author_thumbnail
+    nil
+  end
+
+  def ucid
+    nil
+  end
+
+  def views
+    0_i64
+  end
+
+  # TODO: Playlist stub, add rel="nofolllow"
+  def description_html
+    # html = XML.parse_html(Markdown.to_html(self.description))
+    # html.xpath_nodes(%q(//a)).each do |anchor|
+    #   anchor["rel"] = "nofollow"
+    #   anchor["target"] = "_blank"
+    # end
+    # html.to_xml(options: XML::SaveOptions::NO_DECL)
+
+    HTML.escape(self.description).gsub("\n", "<br>")
+  end
+end
+
+def create_playlist(db, title, privacy, user)
+  plid = "IVPL#{Random::Secure.urlsafe_base64(24)[0, 31]}"
+
+  playlist = InvidiousPlaylist.new(
+    title: title.byte_slice(0, 150),
+    id: plid,
+    author: user.email,
+    description: "", # Max 5000 characters
+    video_count: 0,
+    created: Time.utc,
+    updated: Time.utc,
+    privacy: privacy,
+    index: [] of Int64,
+  )
+
+  playlist_array = playlist.to_a
+  args = arg_array(playlist_array)
+
+  db.exec("INSERT INTO playlists VALUES (#{args})", playlist_array)
+
+  return playlist
 end
 
 def extract_playlist(plid, nodeset, index)
@@ -144,7 +175,7 @@ def extract_playlist(plid, nodeset, index)
       length_seconds: length_seconds,
       published: Time.utc,
       plid: plid,
-      index: index + offset,
+      index: (index + offset).to_i64,
       live_now: live_now
     )
   end
@@ -198,6 +229,18 @@ def produce_playlist_url(id, index)
   url = "/browse_ajax?continuation=#{continuation}&gl=US&hl=en"
 
   return url
+end
+
+def get_playlist(db, plid, locale, refresh = true, force_refresh = false)
+  if plid.starts_with? "IV"
+    if playlist = db.query_one?("SELECT * FROM playlists WHERE id = $1", plid, as: InvidiousPlaylist)
+      return playlist
+    else
+      raise "Playlist does not exist."
+    end
+  else
+    return fetch_playlist(plid, locale)
+  end
 end
 
 def fetch_playlist(plid, locale)
@@ -259,6 +302,68 @@ def fetch_playlist(plid, locale)
   )
 
   return playlist
+end
+
+def get_playlist_videos(db, playlist, page = 1, continuation = nil, locale = nil)
+  if playlist.is_a? InvidiousPlaylist
+    # TODO: Playlist stub, handle continuation for watch page ajax
+    offset = (Math.max(page, 1) - 1) * 100
+    videos = db.query_all("SELECT * FROM playlist_videos WHERE plid = $1 ORDER BY array_position($2, index) LIMIT 100 OFFSET $3", playlist.id, playlist.index, offset, as: PlaylistVideo)
+    return videos
+  else
+    fetch_playlist_videos(playlist.id, page, playlist.video_count, continuation, locale)
+  end
+end
+
+def fetch_playlist_videos(plid, page, video_count, continuation = nil, locale = nil)
+  client = make_client(YT_URL)
+
+  if continuation
+    html = client.get("/watch?v=#{continuation}&list=#{plid}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
+    html = XML.parse_html(html.body)
+
+    index = html.xpath_node(%q(//span[@id="playlist-current-index"])).try &.content.to_i?
+    if index
+      index -= 1
+    end
+    index ||= 0
+  else
+    index = (page - 1) * 100
+  end
+
+  if video_count > 100
+    url = produce_playlist_url(plid, index)
+
+    response = client.get(url)
+    response = JSON.parse(response.body)
+    if !response["content_html"]? || response["content_html"].as_s.empty?
+      raise translate(locale, "Empty playlist")
+    end
+
+    document = XML.parse_html(response["content_html"].as_s)
+    nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
+    videos = extract_playlist(plid, nodeset, index)
+  else
+    # Playlist has less than one page of videos, so subsequent pages will be empty
+    if page > 1
+      videos = [] of PlaylistVideo
+    else
+      # Extract first page of videos
+      response = client.get("/playlist?list=#{plid}&gl=US&hl=en&disable_polymer=1")
+      document = XML.parse_html(response.body)
+      nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
+
+      videos = extract_playlist(plid, nodeset, 0)
+
+      if continuation
+        until videos[0].id == continuation
+          videos.shift
+        end
+      end
+    end
+  end
+
+  return videos
 end
 
 def template_playlist(playlist)
