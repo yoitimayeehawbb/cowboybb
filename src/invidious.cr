@@ -920,8 +920,8 @@ post "/delete_playlist" do |env|
     next env.redirect referer
   end
 
-  PG_DB.exec("DELETE FROM playlists * WHERE id = $1", plid)
   PG_DB.exec("DELETE FROM playlist_videos * WHERE plid = $1", plid)
+  PG_DB.exec("DELETE FROM playlists * WHERE id = $1", plid)
 
   env.redirect "/view_all_playlists"
 end
@@ -1005,7 +1005,15 @@ post "/edit_playlist" do |env|
   privacy = PlaylistPrivacy.parse(env.params.body["privacy"]? || "Public")
   description = env.params.body["description"]?.try &.delete("\r") || ""
 
-  PG_DB.exec("UPDATE playlists SET title = $1, privacy = $2, description = $3 WHERE id = $4", title, privacy, description, plid)
+  if title != playlist.title ||
+     privacy != playlist.privacy ||
+     description != playlist.description
+    updated = Time.now
+  else
+    updated = playlist.updated
+  end
+
+  PG_DB.exec("UPDATE playlists SET title = $1, privacy = $2, description = $3, updated = $4 WHERE id = $5", title, privacy, description, updated, plid)
 
   env.redirect "/playlist?list=#{plid}"
 end
