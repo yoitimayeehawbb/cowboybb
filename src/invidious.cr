@@ -1213,7 +1213,7 @@ get "/playlist" do |env|
   end
 
   if playlist.privacy == PlaylistPrivacy::Private && playlist.author != user.try &.email
-    error_message = "Playlist is private"
+    error_message = "This playlist is private."
     env.response.status_code = 403
     next templated "error"
   end
@@ -1224,7 +1224,10 @@ get "/playlist" do |env|
     videos = [] of PlaylistVideo
   end
 
-  env.set "remove_playlist_items", plid
+  if playlist.author == user.try &.email
+    env.set "remove_playlist_items", plid
+  end
+
   templated "playlist"
 end
 
@@ -4555,19 +4558,12 @@ end
       next error_message
     end
 
-    if playlist.responds_to?(:privacy)
-      case playlist.privacy
-      when PlaylistPrivacy::Public
-        # TODO: Playlist stub
-      when PlaylistPrivacy::Unlisted
-        # TODO: Playlist stub
-      when PlaylistPrivacy::Private
-        user = env.get?("user").try &.as(User)
-        if !user || user.email != playlist.author
-          error_message = {"error" => "This playlist is private."}.to_json
-          env.response.status_code = 500
-          next error_message
-        end
+    if playlist.privacy == PlaylistPrivacy::Private
+      user = env.get?("user").try &.as(User)
+      if !user || user.email != playlist.author
+        error_message = {"error" => "This playlist is private."}.to_json
+        env.response.status_code = 403
+        next error_message
       end
     end
 
@@ -4617,9 +4613,8 @@ end
 
         json.field "videos" do
           json.array do
-            videos.each do |video|
-              # TODO: Convert `index` to `indexId` or similar?
-              video.to_json(locale, config, Kemal.config, json)
+            videos.each_with_index do |video, index|
+              video.to_json(locale, config, Kemal.config, json, index)
             end
           end
         end

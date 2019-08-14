@@ -1,5 +1,5 @@
 struct PlaylistVideo
-  def to_json(locale, config, kemal_config, json : JSON::Builder)
+  def to_json(locale, config, kemal_config, json : JSON::Builder, index = nil)
     json.object do
       json.field "title", self.title
       json.field "videoId", self.id
@@ -12,7 +12,7 @@ struct PlaylistVideo
         generate_thumbnails(json, self.id, config, kemal_config)
       end
 
-      json.field "index", self.index
+      json.field "index", index ? index : self.index
       json.field "lengthSeconds", self.length_seconds
     end
   end
@@ -306,8 +306,11 @@ end
 
 def get_playlist_videos(db, playlist, page = 1, continuation = nil, locale = nil)
   if playlist.is_a? InvidiousPlaylist
-    # TODO: Playlist stub, handle continuation for watch page ajax
-    offset = (Math.max(page, 1) - 1) * 100
+    if continuation
+      offset = Math.max(0, db.query_one?("SELECT array_position($3, index) - 1 FROM playlist_videos WHERE plid = $1 AND id = $2 ORDER BY array_position($3, index) LIMIT 1", playlist.id, continuation, playlist.index, as: Int32) || 0)
+    else
+      offset = (Math.max(page, 1) - 1) * 100
+    end
     videos = db.query_all("SELECT * FROM playlist_videos WHERE plid = $1 ORDER BY array_position($2, index) LIMIT 100 OFFSET $3", playlist.id, playlist.index, offset, as: PlaylistVideo)
     return videos
   else
