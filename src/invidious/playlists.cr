@@ -66,6 +66,8 @@ enum PlaylistPrivacy
 end
 
 struct InvidiousPlaylist
+  property thumbnail_id
+
   module PlaylistPrivacyConverter
     def self.from_rs(rs)
       return PlaylistPrivacy.parse(String.new(rs.read(Slice(UInt8))))
@@ -84,9 +86,9 @@ struct InvidiousPlaylist
     index:       Array(Int64),
   })
 
-  # TODO: Playlist stub, add thumbnail
-  def thumbnail_id
-    nil
+  def thumbnail
+    @thumbnail_id ||= PG_DB.query_one?("SELECT id FROM playlist_videos WHERE plid = $1 ORDER BY array_position($2, index) LIMIT 1", self.id, self.index, as: String) || "-----------"
+    "/vi/#{@thumbnail_id}/mqdefault.jpg"
   end
 
   def author_thumbnail

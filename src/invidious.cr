@@ -4896,8 +4896,8 @@ get "/api/v1/auth/playlists" do |env|
           json.field "videos" do
             json.array do
               videos = get_playlist_videos(PG_DB, playlist, locale: locale)[0, 5]
-              videos.each do |video|
-                video.to_json(locale, config, Kemal.config, json)
+              videos.each_with_index do |video, index|
+                video.to_json(locale, config, Kemal.config, json, index)
               end
             end
           end
