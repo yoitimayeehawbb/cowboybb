@@ -4575,59 +4575,7 @@ end
       end
     end
 
-    begin
-      videos = get_playlist_videos(PG_DB, playlist, page, continuation: continuation, locale: locale)
-    rescue ex
-      videos = [] of PlaylistVideo
-    end
-
-    response = JSON.build do |json|
-      json.object do
-        json.field "type", "playlist"
-        json.field "title", playlist.title
-        json.field "playlistId", playlist.id
-        json.field "playlistThumbnail", playlist.thumbnail
-
-        json.field "author", playlist.author
-        json.field "authorId", playlist.ucid
-        json.field "authorUrl", playlist.ucid ? "/channel/#{playlist.ucid}" : nil
-
-        json.field "authorThumbnails" do
-          json.array do
-            if playlist.author_thumbnail
-              qualities = {32, 48, 76, 100, 176, 512}
-
-              qualities.each do |quality|
-                json.object do
-                  json.field "url", playlist.author_thumbnail.not_nil!.gsub(/=\d+/, "=s#{quality}")
-                  json.field "width", quality
-                  json.field "height", quality
-                end
-              end
-            end
-          end
-        end
-
-        json.field "description", html_to_content(playlist.description_html)
-        json.field "descriptionHtml", playlist.description_html
-        json.field "videoCount", playlist.video_count
-
-        json.field "viewCount", playlist.views
-        json.field "updated", playlist.updated.to_unix
-
-        if playlist.responds_to?(:privacy)
-          json.field "isListed", playlist.privacy.public?
-        end
-
-        json.field "videos" do
-          json.array do
-            videos.each_with_index do |video, index|
-              video.to_json(locale, config, Kemal.config, json, index)
-            end
-          end
-        end
-      end
-    end
+    response = playlist.to_json(locale, config, Kemal.config)
 
     if format == "html"
       response = JSON.parse(response)
@@ -4855,81 +4803,57 @@ get "/api/v1/auth/playlists" do |env|
   env.response.content_type = "application/json"
   user = env.get("user").as(User)
 
-  # TODO: Check that author on Invidious instance != YouTube author for imported/tracked playlists
   playlists = PG_DB.query_all("SELECT * FROM playlists WHERE author = $1", user.email, as: InvidiousPlaylist)
 
   JSON.build do |json|
     json.array do
       playlists.each do |playlist|
-        json.object do
-          json.field "title", playlist.title
-          json.field "playlistId", playlist.id
-
-          json.field "author", playlist.author
-          json.field "authorId", playlist.ucid
-          json.field "authorUrl", playlist.ucid ? "/channel/#{playlist.ucid}" : nil
-
-          json.field "authorThumbnails" do
-            json.array do
-              if playlist.author_thumbnail
-                qualities = {32, 48, 76, 100, 176, 512}
-
-                qualities.each do |quality|
-                  json.object do
-                    json.field "url", playlist.author_thumbnail.not_nil!.gsub(/=\d+/, "=s#{quality}")
-                    json.field "width", quality
-                    json.field "height", quality
-                  end
-                end
-              end
-            end
-          end
-
-          json.field "description", html_to_content(playlist.description_html)
-          json.field "descriptionHtml", playlist.description_html
-          json.field "videoCount", playlist.video_count
-
-          json.field "viewCount", playlist.views
-          json.field "updated", playlist.updated.to_unix
-          json.field "isListed", playlist.privacy.public?
-
-          json.field "videos" do
-            json.array do
-              videos = get_playlist_videos(PG_DB, playlist, locale: locale)[0, 5]
-              videos.each_with_index do |video, index|
-                video.to_json(locale, config, Kemal.config, json, index)
-              end
-            end
-          end
-        end
+        playlist.to_json(locale, config, Kemal.config, json)
       end
     end
   end
 end
 
 post "/api/v1/auth/playlists" do |env|
-  # Create new playlist
-  # TODO: Playlist stub
-  {"name"           => String,
-   "description"    => String,
-   "privacy"        => PlaylistPrivacy,
-   "sourcePlaylist" => String?,
-   "videoIds"       => Array(String)?,
-  }
+  env.response.content_type = "application/json"
+  user = env.get("user").as(User)
+  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+
+  title = env.params.body["title"].as(String)
+  privacy = env.params.body["privacy"]?.try &.as(String).downcase || "public"
+  case privacy
+  when "public"
+    privacy = PlaylistPrivacy::Public
+  when "unlisted"
+    privacy = PlaylistPrivacy::Unlisted
+  when "private"
+    privacy = PlaylistPrivacy::Private
+  else
+    error_message = {"error" => "Invalid privacy setting."}.to_json
+    env.response.status_code = 400
+    next error_message
+  end
+
+  if PG_DB.query_one("SELECT count(*) FROM playlists WHERE author = $1", user.email, as: Int64) >= 100
+    error_message = {"error" => "User cannot have more than 100 playlists."}.to_json
+    env.response.status_code = 400
+    next templated "error"
+  end
+
+  create_playlist(PG_DB, title, privacy, user).to_json(locale, config, Kemal.config)
 end
 
-post "/api/v1/auth/playlists/:plid" do |env|
-  # Modify playlist, should this be "put"?
+patch "/api/v1/auth/playlists/:plid" do |env|
+  # {
+  #   "title"       => String?,
+  #   "privacy"     => String?,
+  #   "description" => String?,
+  # }
   # TODO: Playlist stub
-  {"index"   => Int32,
-   "videoId" => String,
-  }
 end
 
 delete "/api/v1/auth/playlists/:plid" do |env|
-  # Delete playlist
   # TODO: Playlist stub
-  {"index" => Int32}
 end
 
 get "/api/v1/auth/tokens" do |env|

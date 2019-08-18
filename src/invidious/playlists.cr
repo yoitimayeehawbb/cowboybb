@@ -17,12 +17,12 @@ struct PlaylistVideo
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil, index = nil)
     if json
-      to_json(locale, config, kemal_config, json)
+      to_json(locale, config, kemal_config, json, index)
     else
       JSON.build do |json|
-        to_json(locale, config, kemal_config, json)
+        to_json(locale, config, kemal_config, json, index)
       end
     end
   end
@@ -41,6 +41,60 @@ struct PlaylistVideo
 end
 
 struct Playlist
+  def to_json(locale, config, kemal_config, json : JSON::Builder)
+    json.object do
+      json.field "type", "playlist"
+      json.field "title", self.title
+      json.field "playlistId", self.id
+      json.field "playlistThumbnail", self.thumbnail
+
+      json.field "author", self.author
+      json.field "authorId", self.ucid
+      json.field "authorUrl", "/channel/#{self.ucid}"
+
+      json.field "authorThumbnails" do
+        json.array do
+          qualities = {32, 48, 76, 100, 176, 512}
+
+          qualities.each do |quality|
+            json.object do
+              json.field "url", self.author_thumbnail.not_nil!.gsub(/=\d+/, "=s#{quality}")
+              json.field "width", quality
+              json.field "height", quality
+            end
+          end
+        end
+      end
+
+      json.field "description", html_to_content(self.description_html)
+      json.field "descriptionHtml", self.description_html
+      json.field "videoCount", self.video_count
+
+      json.field "viewCount", self.views
+      json.field "updated", self.updated.to_unix
+      json.field "isListed", self.privacy.public?
+
+      json.field "videos" do
+        json.array do
+          videos = get_playlist_videos(PG_DB, self, locale: locale)[0, 5]
+          videos.each_with_index do |video, index|
+            video.to_json(locale, config, Kemal.config, json, index)
+          end
+        end
+      end
+    end
+  end
+
+  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+    if json
+      to_json(locale, config, kemal_config, json)
+    else
+      JSON.build do |json|
+        to_json(locale, config, kemal_config, json)
+      end
+    end
+  end
+
   db_mapping({
     title:            String,
     id:               String,
@@ -66,6 +120,46 @@ enum PlaylistPrivacy
 end
 
 struct InvidiousPlaylist
+  def to_json(locale, config, kemal_config, json : JSON::Builder)
+    json.object do
+      json.field "type", "invidiousPlaylist"
+      json.field "title", self.title
+      json.field "playlistId", self.id
+
+      json.field "author", self.author
+      json.field "authorId", self.ucid
+      json.field "authorUrl", nil
+      json.field "authorThumbnails", [] of String
+
+      json.field "description", html_to_content(self.description_html)
+      json.field "descriptionHtml", self.description_html
+      json.field "videoCount", self.video_count
+
+      json.field "viewCount", self.views
+      json.field "updated", self.updated.to_unix
+      json.field "isListed", self.privacy.public?
+
+      json.field "videos" do
+        json.array do
+          videos = get_playlist_videos(PG_DB, self, locale: locale)[0, 5]
+          videos.each_with_index do |video, index|
+            video.to_json(locale, config, Kemal.config, json, index)
+          end
+        end
+      end
+    end
+  end
+
+  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+    if json
+      to_json(locale, config, kemal_config, json)
+    else
+      JSON.build do |json|
+        to_json(locale, config, kemal_config, json)
+      end
+    end
+  end
+
   property thumbnail_id
 
   module PlaylistPrivacyConverter
