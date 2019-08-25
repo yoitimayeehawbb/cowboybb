@@ -3175,7 +3175,7 @@ get "/feed/playlist/:plid" do |env|
           end
 
           videos.each do |video|
-            # TODO: Playlist stub
+            video.to_xml(host_url, false, xml)
           end
         end
       end
