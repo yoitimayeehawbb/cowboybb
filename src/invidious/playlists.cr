@@ -249,15 +249,7 @@ struct InvidiousPlaylist
     0_i64
   end
 
-  # TODO: Playlist stub, add rel="nofolllow"
   def description_html
-    # html = XML.parse_html(Markdown.to_html(self.description))
-    # html.xpath_nodes(%q(//a)).each do |anchor|
-    #   anchor["rel"] = "nofollow"
-    #   anchor["target"] = "_blank"
-    # end
-    # html.to_xml(options: XML::SaveOptions::NO_DECL)
-
     HTML.escape(self.description).gsub("\n", "<br>")
   end
 end

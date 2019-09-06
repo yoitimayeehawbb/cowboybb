@@ -1154,10 +1154,6 @@ post "/playlist_ajax" do |env|
   email = user.email
 
   case action
-  when "action_create_playlist"
-    # TODO: Playlist stub
-  when "action_delete_playlist"
-    # TODO: Playlist stub
   when "action_edit_playlist"
     # TODO: Playlist stub
   when "action_add_video"

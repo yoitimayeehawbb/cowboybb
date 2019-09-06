@@ -4,7 +4,7 @@
 
 <div class="h-box">
     <form class="pure-form pure-form-aligned" action="/delete_playlist?list=<%= plid %>&referer=<%= URI.escape(referer) %>" method="post">
-        <legend><%= translate(locale, "Delete playlist \"`x`\"?", HTML.escape(playlist.title)) %></legend>
+        <legend><%= translate(locale, "Delete playlist `x`?", %|"#{HTML.escape(playlist.title)}"|) %></legend>
 
         <div class="pure-g">
             <div class="pure-u-1-2">
