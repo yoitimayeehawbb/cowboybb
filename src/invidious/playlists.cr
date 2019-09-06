@@ -35,7 +35,7 @@ struct PlaylistVideo
     end
   end
 
-  def to_xml(host_url, auto_generated, xml : XML::Builder | Nil = nil)
+  def to_xml(host_url, auto_generated, xml : XML::Builder? = nil)
     if xml
       to_xml(host_url, auto_generated, xml)
     else
@@ -45,7 +45,7 @@ struct PlaylistVideo
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder, index = nil)
+  def to_json(locale, config, kemal_config, json : JSON::Builder, index : Int32?)
     json.object do
       json.field "title", self.title
       json.field "videoId", self.id
@@ -58,17 +58,23 @@ struct PlaylistVideo
         generate_thumbnails(json, self.id, config, kemal_config)
       end
 
-      json.field "index", index ? index : self.index
+      if index
+        json.field "index", index
+        json.field "indexId", self.index.to_u64.to_s(16).upcase
+      else
+        json.field "index", self.index
+      end
+
       json.field "lengthSeconds", self.length_seconds
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil, index = nil)
+  def to_json(locale, config, kemal_config, json : JSON::Builder? = nil, index : Int32? = nil)
     if json
-      to_json(locale, config, kemal_config, json, index)
+      to_json(locale, config, kemal_config, json, index: index)
     else
       JSON.build do |json|
-        to_json(locale, config, kemal_config, json, index)
+        to_json(locale, config, kemal_config, json, index: index)
       end
     end
   end
@@ -87,7 +93,7 @@ struct PlaylistVideo
 end
 
 struct Playlist
-  def to_json(locale, config, kemal_config, json : JSON::Builder)
+  def to_json(offset, locale, config, kemal_config, json : JSON::Builder, continuation : String? = nil)
     json.object do
       json.field "type", "playlist"
       json.field "title", self.title
@@ -122,21 +128,21 @@ struct Playlist
 
       json.field "videos" do
         json.array do
-          videos = get_playlist_videos(PG_DB, self, locale: locale)[0, 5]
+          videos = get_playlist_videos(PG_DB, self, offset: offset, locale: locale, continuation: continuation)
           videos.each_with_index do |video, index|
-            video.to_json(locale, config, Kemal.config, json, index)
+            video.to_json(locale, config, Kemal.config, json)
           end
         end
       end
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+  def to_json(offset, locale, config, kemal_config, json : JSON::Builder? = nil, continuation : String? = nil)
     if json
-      to_json(locale, config, kemal_config, json)
+      to_json(offset, locale, config, kemal_config, json, continuation: continuation)
     else
       JSON.build do |json|
-        to_json(locale, config, kemal_config, json)
+        to_json(offset, locale, config, kemal_config, json, continuation: continuation)
       end
     end
   end
@@ -166,7 +172,7 @@ enum PlaylistPrivacy
 end
 
 struct InvidiousPlaylist
-  def to_json(locale, config, kemal_config, json : JSON::Builder)
+  def to_json(offset, locale, config, kemal_config, json : JSON::Builder, continuation : String? = nil)
     json.object do
       json.field "type", "invidiousPlaylist"
       json.field "title", self.title
@@ -187,21 +193,21 @@ struct InvidiousPlaylist
 
       json.field "videos" do
         json.array do
-          videos = get_playlist_videos(PG_DB, self, locale: locale)[0, 5]
+          videos = get_playlist_videos(PG_DB, self, offset: offset, locale: locale, continuation: continuation)
           videos.each_with_index do |video, index|
-            video.to_json(locale, config, Kemal.config, json, index)
+            video.to_json(locale, config, Kemal.config, json, offset + index)
           end
         end
       end
     end
   end
 
-  def to_json(locale, config, kemal_config, json : JSON::Builder | Nil = nil)
+  def to_json(offset, locale, config, kemal_config, json : JSON::Builder? = nil, continuation : String? = nil)
     if json
-      to_json(locale, config, kemal_config, json)
+      to_json(offset, locale, config, kemal_config, json, continuation: continuation)
     else
       JSON.build do |json|
-        to_json(locale, config, kemal_config, json)
+        to_json(offset, locale, config, kemal_config, json, continuation: continuation)
       end
     end
   end
@@ -446,38 +452,32 @@ def fetch_playlist(plid, locale)
   return playlist
 end
 
-def get_playlist_videos(db, playlist, page = 1, continuation = nil, locale = nil)
+def get_playlist_videos(db, playlist, offset, locale = nil, continuation = nil)
   if playlist.is_a? InvidiousPlaylist
-    if continuation
-      offset = Math.max(0, db.query_one?("SELECT array_position($3, index) - 1 FROM playlist_videos WHERE plid = $1 AND id = $2 ORDER BY array_position($3, index) LIMIT 1", playlist.id, continuation, playlist.index, as: Int32) || 0)
-    else
-      offset = (Math.max(page, 1) - 1) * 100
+    if !offset
+      index = PG_DB.query_one?("SELECT index FROM playlist_videos WHERE plid = $1 AND id = $2 LIMIT 1", playlist.id, continuation, as: Int64)
+      offset = playlist.index.index(index) || 0
     end
-    videos = db.query_all("SELECT * FROM playlist_videos WHERE plid = $1 ORDER BY array_position($2, index) LIMIT 100 OFFSET $3", playlist.id, playlist.index, offset, as: PlaylistVideo)
-    return videos
+
+    db.query_all("SELECT * FROM playlist_videos WHERE plid = $1 ORDER BY array_position($2, index) LIMIT 100 OFFSET $3", playlist.id, playlist.index, offset, as: PlaylistVideo)
   else
-    fetch_playlist_videos(playlist.id, page, playlist.video_count, continuation, locale)
+    fetch_playlist_videos(playlist.id, playlist.video_count, offset, locale, continuation)
   end
 end
 
-def fetch_playlist_videos(plid, page, video_count, continuation = nil, locale = nil)
+def fetch_playlist_videos(plid, video_count, offset = 0, locale = nil, continuation = nil)
   client = make_client(YT_URL)
 
   if continuation
     html = client.get("/watch?v=#{continuation}&list=#{plid}&gl=US&hl=en&disable_polymer=1&has_verified=1&bpctr=9999999999")
     html = XML.parse_html(html.body)
 
-    index = html.xpath_node(%q(//span[@id="playlist-current-index"])).try &.content.to_i?
-    if index
-      index -= 1
-    end
-    index ||= 0
-  else
-    index = (page - 1) * 100
+    index = html.xpath_node(%q(//span[@id="playlist-current-index"])).try &.content.to_i?.try &.- 1
+    offset = index || offset
   end
 
   if video_count > 100
-    url = produce_playlist_url(plid, index)
+    url = produce_playlist_url(plid, offset)
 
     response = client.get(url)
     response = JSON.parse(response.body)
@@ -487,25 +487,17 @@ def fetch_playlist_videos(plid, page, video_count, continuation = nil, locale = 
 
     document = XML.parse_html(response["content_html"].as_s)
     nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
-    videos = extract_playlist(plid, nodeset, index)
-  else
-    # Playlist has less than one page of videos, so subsequent pages will be empty
-    if page > 1
-      videos = [] of PlaylistVideo
-    else
-      # Extract first page of videos
-      response = client.get("/playlist?list=#{plid}&gl=US&hl=en&disable_polymer=1")
-      document = XML.parse_html(response.body)
-      nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
+    videos = extract_playlist(plid, nodeset, offset)
+  else # Extract first page of videos
+    response = client.get("/playlist?list=#{plid}&gl=US&hl=en&disable_polymer=1")
+    document = XML.parse_html(response.body)
+    nodeset = document.xpath_nodes(%q(.//tr[contains(@class, "pl-video")]))
 
-      videos = extract_playlist(plid, nodeset, 0)
+    videos = extract_playlist(plid, nodeset, offset)
+  end
 
-      if continuation
-        until videos[0].id == continuation
-          videos.shift
-        end
-      end
-    end
+  until videos.empty? || videos[0].index == offset
+    videos.shift
   end
 
   return videos

@@ -125,17 +125,19 @@ Kemal::CLI.new ARGV
 
 # Check table integrity
 if CONFIG.check_tables
-  analyze_table(PG_DB, logger, "channels", InvidiousChannel)
-  analyze_table(PG_DB, logger, "channel_videos", ChannelVideo)
-  analyze_table(PG_DB, logger, "playlists", InvidiousPlaylist)
-  analyze_table(PG_DB, logger, "playlist_videos", PlaylistVideo)
-  analyze_table(PG_DB, logger, "nonces", Nonce)
-  analyze_table(PG_DB, logger, "session_ids", SessionId)
-  analyze_table(PG_DB, logger, "users", User)
-  analyze_table(PG_DB, logger, "videos", Video)
+  check_enum(PG_DB, logger, "privacy", PlaylistPrivacy)
+
+  check_table(PG_DB, logger, "channels", InvidiousChannel)
+  check_table(PG_DB, logger, "channel_videos", ChannelVideo)
+  check_table(PG_DB, logger, "playlists", InvidiousPlaylist)
+  check_table(PG_DB, logger, "playlist_videos", PlaylistVideo)
+  check_table(PG_DB, logger, "nonces", Nonce)
+  check_table(PG_DB, logger, "session_ids", SessionId)
+  check_table(PG_DB, logger, "users", User)
+  check_table(PG_DB, logger, "videos", Video)
 
   if CONFIG.cache_annotations
-    analyze_table(PG_DB, logger, "annotations", Annotation)
+    check_table(PG_DB, logger, "annotations", Annotation)
   end
 end
 
@@ -386,6 +388,8 @@ get "/watch" do |env|
   end
 
   plid = env.params.query["list"]?
+  continuation = process_continuation(PG_DB, env.params.query, plid, id)
+
   nojs = env.params.query["nojs"]?
 
   nojs ||= "0"
@@ -571,7 +575,8 @@ get "/embed/" do |env|
   if plid = env.params.query["list"]?
     begin
       playlist = get_playlist(PG_DB, plid, locale: locale)
-      videos = get_playlist_videos(PG_DB, playlist, locale: locale)
+      offset = env.params.query["index"]?.try &.to_i? || 0
+      videos = get_playlist_videos(PG_DB, playlist, offset: offset, locale: locale)
     rescue ex
       error_message = ex.message
       env.response.status_code = 500
@@ -593,7 +598,9 @@ end
 get "/embed/:id" do |env|
   locale = LOCALES[env.get("preferences").as(Preferences).locale]?
   id = env.params.url["id"]
+
   plid = env.params.query["list"]?
+  continuation = process_continuation(PG_DB, env.params.query, plid, id)
 
   if md = env.params.query["playlist"]?
        .try &.match(/[a-zA-Z0-9_-]{11}(,[a-zA-Z0-9_-]{11})*/)
@@ -624,7 +631,8 @@ get "/embed/:id" do |env|
     if plid
       begin
         playlist = get_playlist(PG_DB, plid, locale: locale)
-        videos = get_playlist_videos(PG_DB, playlist, locale: locale)
+        offset = env.params.query["index"]?.try &.to_i? || 0
+        videos = get_playlist_videos(PG_DB, playlist, offset: offset, locale: locale)
       rescue ex
         error_message = ex.message
         env.response.status_code = 500
@@ -958,7 +966,7 @@ get "/edit_playlist" do |env|
   end
 
   begin
-    videos = get_playlist_videos(PG_DB, playlist, page, locale: locale)
+    videos = get_playlist_videos(PG_DB, playlist, offset: (page - 1) * 100, locale: locale)
   rescue ex
     videos = [] of PlaylistVideo
   end
@@ -1153,13 +1161,31 @@ post "/playlist_ajax" do |env|
   when "action_edit_playlist"
     # TODO: Playlist stub
   when "action_add_video"
-    # TODO: Wrap error response
-    raise "Cannot have playlist larger than 1000 videos" if playlist.index.size >= 1000
+    if playlist.index.size >= 500
+      env.response.status_code = 400
+      if redirect
+        error_message = "Playlist cannot have more than 500 videos"
+        next templated "error"
+      else
+        error_message = {"error" => "Playlist cannot have more than 500 videos"}.to_json
+        next error_message
+      end
+    end
 
     video_id = env.params.query["video_id"]
 
-    # TODO: Wrap error response
-    video = get_video(video_id, PG_DB)
+    begin
+      video = get_video(video_id, PG_DB)
+    rescue ex
+      env.response.status_code = 500
+      if redirect
+        error_message = ex.message
+        next templated "error"
+      else
+        error_message = {"error" => ex.message}.to_json
+        next error_message
+      end
+    end
 
     playlist_video = PlaylistVideo.new(
       title: video.title,
@@ -1227,7 +1253,7 @@ get "/playlist" do |env|
   end
 
   begin
-    videos = get_playlist_videos(PG_DB, playlist, page, locale: locale)
+    videos = get_playlist_videos(PG_DB, playlist, offset: (page - 1) * 100, locale: locale)
   rescue ex
     videos = [] of PlaylistVideo
   end
@@ -2137,13 +2163,12 @@ post "/watch_ajax" do |env|
   begin
     validate_request(token, sid, env.request, HMAC_KEY, PG_DB, locale)
   rescue ex
+    env.response.status_code = 400
     if redirect
       error_message = ex.message
-      env.response.status_code = 400
       next templated "error"
     else
       error_message = {"error" => ex.message}.to_json
-      env.response.status_code = 400
       next error_message
     end
   end
@@ -3158,7 +3183,7 @@ get "/feed/playlist/:plid" do |env|
 
   if plid.starts_with? "IV"
     if playlist = PG_DB.query_one?("SELECT * FROM playlists WHERE id = $1", plid, as: InvidiousPlaylist)
-      videos = get_playlist_videos(PG_DB, playlist, locale: locale)
+      videos = get_playlist_videos(PG_DB, playlist, offset: 0, locale: locale)
 
       next XML.build(indent: "  ", encoding: "UTF-8") do |xml|
         xml.element("feed", "xmlns:yt": "http://www.youtube.com/xml/schemas/2015",
@@ -4546,13 +4571,14 @@ end
     env.response.content_type = "application/json"
     plid = env.params.url["plid"]
 
-    page = env.params.query["page"]?.try &.to_i?
-    page ||= 1
+    offset = env.params.query["index"]?.try &.to_i?
+    offset ||= env.params.query["page"]?.try &.to_i?.try { |page| (page - 1) * 100 }
+    offset ||= 0
+
+    continuation = env.params.query["continuation"]?
 
     format = env.params.query["format"]?
     format ||= "json"
-
-    continuation = env.params.query["continuation"]?
 
     if plid.starts_with? "RD"
       next env.redirect "/api/v1/mixes/#{plid}"
@@ -4561,29 +4587,29 @@ end
     begin
       playlist = get_playlist(PG_DB, plid, locale)
     rescue ex
-      error_message = {"error" => "Playlist is empty"}.to_json
-      env.response.status_code = 410
+      env.response.status_code = 404
+      error_message = {"error" => "Playlist does not exist."}.to_json
       next error_message
     end
 
-    if playlist.privacy == PlaylistPrivacy::Private
-      user = env.get?("user").try &.as(User)
-      if !user || user.email != playlist.author
-        error_message = {"error" => "This playlist is private."}.to_json
-        env.response.status_code = 403
-        next error_message
-      end
+    user = env.get?("user").try &.as(User)
+    if !playlist || !playlist.privacy.public? && playlist.author != user.try &.email
+      env.response.status_code = 404
+      error_message = {"error" => "Playlist does not exist."}.to_json
+      next error_message
     end
 
-    response = playlist.to_json(locale, config, Kemal.config)
+    response = playlist.to_json(offset, locale, config, Kemal.config, continuation: continuation)
 
     if format == "html"
       response = JSON.parse(response)
       playlist_html = template_playlist(response)
+      index = response["videos"].as_a[1]?.try &.["index"]
       next_video = response["videos"].as_a[1]?.try &.["videoId"]
 
       response = {
         "playlistHtml" => playlist_html,
+        "index"        => index,
         "nextVideo"    => next_video,
       }.to_json
     end
@@ -4808,7 +4834,7 @@ get "/api/v1/auth/playlists" do |env|
   JSON.build do |json|
     json.array do
       playlists.each do |playlist|
-        playlist.to_json(locale, config, Kemal.config, json)
+        playlist.to_json(0, locale, config, Kemal.config, json)
       end
     end
   end
@@ -4840,20 +4866,70 @@ post "/api/v1/auth/playlists" do |env|
     next templated "error"
   end
 
-  create_playlist(PG_DB, title, privacy, user).to_json(locale, config, Kemal.config)
+  playlist = create_playlist(PG_DB, title, privacy, user)
+  playlist.to_json(0, locale, config, Kemal.config)
 end
 
 patch "/api/v1/auth/playlists/:plid" do |env|
-  # {
-  #   "title"       => String?,
-  #   "privacy"     => String?,
-  #   "description" => String?,
-  # }
-  # TODO: Playlist stub
+  locale = LOCALES[env.get("preferences").as(Preferences).locale]?
+
+  env.response.content_type = "application/json"
+  user = env.get("user").as(User)
+
+  plid = env.params.url["plid"]
+
+  playlist = PG_DB.query_one?("SELECT * FROM playlists WHERE id = $1", plid, as: InvidiousPlaylist)
+  if !playlist || playlist.author != user.email && !playlist.privacy.public?
+    env.response.status_code = 404
+    error_message = {"error" => "Playlist does not exist."}.to_json
+    next error_message
+  end
+
+  if playlist.author != user.email
+    env.response.status_code = 403
+    error_message = {"error" => "Invalid user"}.to_json
+    next error_message
+  end
+
+  title = env.params.body["title"]?.try &.as(String).delete("<>")
+  privacy = env.params.body["privacy"]?.try { |privacy| PlaylistPrivacy.parse(privacy.as(String)) }
+  description = env.params.body["description"]?.try &.as(String).delete("\r")
+
+  if title != playlist.title ||
+     privacy != playlist.privacy ||
+     description != playlist.description
+    updated = Time.now
+  else
+    updated = playlist.updated
+  end
+
+  PG_DB.exec("UPDATE playlists SET title = $1, privacy = $2, description = $3, updated = $4 WHERE id = $5", title, privacy, description, updated, plid)
+  env.response.status_code = 204
 end
 
 delete "/api/v1/auth/playlists/:plid" do |env|
-  # TODO: Playlist stub
+  env.response.content_type = "application/json"
+  user = env.get("user").as(User)
+
+  plid = env.params.url["plid"]
+
+  playlist = PG_DB.query_one?("SELECT * FROM playlists WHERE id = $1", plid, as: InvidiousPlaylist)
+  if !playlist || playlist.author != user.email && !playlist.privacy.public?
+    env.response.status_code = 404
+    error_message = {"error" => "Playlist does not exist."}.to_json
+    next error_message
+  end
+
+  if playlist.author != user.email
+    env.response.status_code = 403
+    error_message = {"error" => "Invalid user"}.to_json
+    next error_message
+  end
+
+  PG_DB.exec("DELETE FROM playlist_videos * WHERE plid = $1", plid)
+  PG_DB.exec("DELETE FROM playlists * WHERE id = $1", plid)
+
+  env.response.status_code = 204
 end
 
 get "/api/v1/auth/tokens" do |env|

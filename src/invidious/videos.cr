@@ -1275,6 +1275,20 @@ def itag_to_metadata?(itag : String)
   return VIDEO_FORMATS[itag]?
 end
 
+def process_continuation(db, query, plid, id)
+  continuation = nil
+  if plid
+    if index = query["index"]?.try &.to_i?
+      continuation = index
+    else
+      continuation = id
+    end
+    continuation ||= 0
+  end
+
+  continuation
+end
+
 def process_video_params(query, preferences)
   annotations = query["iv_load_policy"]?.try &.to_i?
   autoplay = query["autoplay"]?.try &.to_i?
