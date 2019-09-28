@@ -1016,7 +1016,7 @@ post "/edit_playlist" do |env|
   if title != playlist.title ||
      privacy != playlist.privacy ||
      description != playlist.description
-    updated = Time.now
+    updated = Time.utc
   else
     updated = playlist.updated
   end
@@ -4894,7 +4894,7 @@ patch "/api/v1/auth/playlists/:plid" do |env|
   if title != playlist.title ||
      privacy != playlist.privacy ||
      description != playlist.description
-    updated = Time.now
+    updated = Time.utc
   else
     updated = playlist.updated
   end

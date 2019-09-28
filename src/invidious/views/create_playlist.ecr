@@ -6,7 +6,7 @@
     <div class="pure-u-1 pure-u-lg-1-5"></div>
     <div class="pure-u-1 pure-u-lg-3-5">
         <div class="h-box">
-            <form class="pure-form pure-form-aligned" action="/create_playlist?referer=<%= URI.escape(referer) %>" method="post">
+            <form class="pure-form pure-form-aligned" action="/create_playlist?referer=<%= URI.encode_www_form(referer) %>" method="post">
                 <fieldset>
                     <legend><%= translate(locale, "Create playlist") %></legend>
 
@@ -30,7 +30,7 @@
                         </button>
                     </div>
 
-                    <input type="hidden" name="csrf_token" value="<%= URI.escape(csrf_token) %>">
+                    <input type="hidden" name="csrf_token" value="<%= URI.encode_www_form(csrf_token) %>">
                 </fieldset>
             </form>
         </div>
